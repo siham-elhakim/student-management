@@ -2,9 +2,12 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 // Middleware
 app.use(bodyParser.json());
@@ -23,56 +26,189 @@ const db = new sqlite3.Database('./students.db', (err) => {
 
 // Initialize Database Tables
 function initializeDatabase() {
+  // Users table
   db.run(`
-    CREATE TABLE IF NOT EXISTS students (
+    CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
-      phone TEXT,
-      address TEXT,
-      enrollmentDate TEXT NOT NULL,
-      status TEXT DEFAULT 'Active'
+      password TEXT NOT NULL,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `, (err) => {
     if (err) {
-      console.error('Error creating table:', err);
+      console.error('Error creating users table:', err);
+    } else {
+      console.log('Users table initialized');
+    }
+  });
+
+  // Students table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS students (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      userId INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      phone TEXT,
+      address TEXT,
+      enrollmentDate TEXT NOT NULL,
+      status TEXT DEFAULT 'Active',
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(userId, email)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating students table:', err);
     } else {
       console.log('Students table initialized');
     }
   });
 }
 
+// JWT Middleware
+function verifyToken(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided. Please login.' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    req.userId = decoded.userId;
+    next();
+  });
+}
+
 // Routes
 
-// GET all students
-app.get('/api/students', (req, res) => {
-  db.all('SELECT * FROM students ORDER BY id DESC', (err, rows) => {
+// ============ AUTHENTICATION ROUTES ============
+
+// Register
+app.post('/api/auth/register', (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'Name, email, and password are required' });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  // Hash password
+  bcrypt.hash(password, 10, (err, hashedPassword) => {
     if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+      return res.status(500).json({ error: 'Password hashing failed' });
     }
-    res.json(rows);
+
+    const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
+    db.run(query, [name, email, hashedPassword], function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE constraint failed')) {
+          return res.status(400).json({ error: 'Email already registered' });
+        }
+        return res.status(500).json({ error: err.message });
+      }
+
+      res.status(201).json({ 
+        id: this.lastID,
+        message: 'User registered successfully. Please login.' 
+      });
+    });
   });
+});
+
+// Login
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Compare passwords
+    bcrypt.compare(password, user.password, (err, isMatch) => {
+      if (err) {
+        return res.status(500).json({ error: 'Password comparison failed' });
+      }
+
+      if (!isMatch) {
+        return res.status(401).json({ error: 'Invalid email or password' });
+      }
+
+      // Create JWT token
+      const token = jwt.sign(
+        { userId: user.id, email: user.email, name: user.name },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+
+      res.json({ 
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email
+        },
+        message: 'Login successful'
+      });
+    });
+  });
+});
+
+// ============ STUDENT ROUTES (Protected) ============
+
+// GET all students for logged-in user
+app.get('/api/students', verifyToken, (req, res) => {
+  db.all(
+    'SELECT * FROM students WHERE userId = ? ORDER BY id DESC',
+    [req.userId],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json(rows || []);
+    }
+  );
 });
 
 // GET student by ID
-app.get('/api/students/:id', (req, res) => {
+app.get('/api/students/:id', verifyToken, (req, res) => {
   const { id } = req.params;
-  db.get('SELECT * FROM students WHERE id = ?', [id], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+  db.get(
+    'SELECT * FROM students WHERE id = ? AND userId = ?',
+    [id, req.userId],
+    (err, row) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      if (!row) {
+        res.status(404).json({ error: 'Student not found' });
+        return;
+      }
+      res.json(row);
     }
-    if (!row) {
-      res.status(404).json({ error: 'Student not found' });
-      return;
-    }
-    res.json(row);
-  });
+  );
 });
 
 // CREATE new student
-app.post('/api/students', (req, res) => {
+app.post('/api/students', verifyToken, (req, res) => {
   const { name, email, phone, address, enrollmentDate, status } = req.body;
 
   if (!name || !email || !enrollmentDate) {
@@ -81,88 +217,105 @@ app.post('/api/students', (req, res) => {
   }
 
   const query = `
-    INSERT INTO students (name, email, phone, address, enrollmentDate, status)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO students (userId, name, email, phone, address, enrollmentDate, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `;
 
-  db.run(query, [name, email, phone || null, address || null, enrollmentDate, status || 'Active'], function(err) {
-    if (err) {
-      if (err.message.includes('UNIQUE constraint failed')) {
-        res.status(400).json({ error: 'Email already exists' });
-      } else {
-        res.status(500).json({ error: err.message });
+  db.run(
+    query,
+    [req.userId, name, email, phone || null, address || null, enrollmentDate, status || 'Active'],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE constraint failed')) {
+          res.status(400).json({ error: 'Email already exists for your account' });
+        } else {
+          res.status(500).json({ error: err.message });
+        }
+        return;
       }
-      return;
+      res.status(201).json({ 
+        id: this.lastID,
+        message: 'Student added successfully' 
+      });
     }
-    res.status(201).json({ 
-      id: this.lastID,
-      message: 'Student added successfully' 
-    });
-  });
+  );
 });
 
 // UPDATE student
-app.put('/api/students/:id', (req, res) => {
+app.put('/api/students/:id', verifyToken, (req, res) => {
   const { id } = req.params;
   const { name, email, phone, address, enrollmentDate, status } = req.body;
 
   const query = `
     UPDATE students 
     SET name = ?, email = ?, phone = ?, address = ?, enrollmentDate = ?, status = ?
-    WHERE id = ?
+    WHERE id = ? AND userId = ?
   `;
 
-  db.run(query, [name, email, phone, address, enrollmentDate, status, id], function(err) {
-    if (err) {
-      if (err.message.includes('UNIQUE constraint failed')) {
-        res.status(400).json({ error: 'Email already exists' });
-      } else {
-        res.status(500).json({ error: err.message });
+  db.run(
+    query,
+    [name, email, phone, address, enrollmentDate, status, id, req.userId],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE constraint failed')) {
+          res.status(400).json({ error: 'Email already exists for your account' });
+        } else {
+          res.status(500).json({ error: err.message });
+        }
+        return;
       }
-      return;
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Student not found' });
+        return;
+      }
+      res.json({ message: 'Student updated successfully' });
     }
-    if (this.changes === 0) {
-      res.status(404).json({ error: 'Student not found' });
-      return;
-    }
-    res.json({ message: 'Student updated successfully' });
-  });
+  );
 });
 
 // DELETE student
-app.delete('/api/students/:id', (req, res) => {
+app.delete('/api/students/:id', verifyToken, (req, res) => {
   const { id } = req.params;
 
-  db.run('DELETE FROM students WHERE id = ?', [id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+  db.run(
+    'DELETE FROM students WHERE id = ? AND userId = ?',
+    [id, req.userId],
+    function(err) {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Student not found' });
+        return;
+      }
+      res.json({ message: 'Student deleted successfully' });
     }
-    if (this.changes === 0) {
-      res.status(404).json({ error: 'Student not found' });
-      return;
-    }
-    res.json({ message: 'Student deleted successfully' });
-  });
+  );
 });
 
 // Search students
-app.get('/api/students/search/:query', (req, res) => {
+app.get('/api/students/search/:query', verifyToken, (req, res) => {
   const searchQuery = req.params.query;
   const sql = `
     SELECT * FROM students 
-    WHERE name LIKE ? OR email LIKE ? 
+    WHERE userId = ? AND (name LIKE ? OR email LIKE ?)
     ORDER BY id DESC
   `;
   const searchTerm = `%${searchQuery}%`;
   
-  db.all(sql, [searchTerm, searchTerm], (err, rows) => {
+  db.all(sql, [req.userId, searchTerm, searchTerm], (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json(rows);
+    res.json(rows || []);
   });
+});
+
+// Health check endpoint (no auth required)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', message: 'Server is running' });
 });
 
 // Start Server

@@ -1,3 +1,59 @@
+// Check authentication on page load
+document.addEventListener('DOMContentLoaded', () => {
+  const token = localStorage.getItem('token');
+  
+  if (!token) {
+    // Redirect to login if no token
+    window.location.href = 'login.html';
+    return;
+  }
+
+  // Verify token is still valid
+  verifyToken();
+  loadStudents();
+  setupLogout();
+});
+
+// Verify token validity
+async function verifyToken() {
+  const token = localStorage.getItem('token');
+  
+  try {
+    const response = await fetch('/api/health');
+    if (!response.ok) throw new Error('Server error');
+  } catch (error) {
+    console.error('Server check failed:', error);
+  }
+}
+
+// Setup logout
+function setupLogout() {
+  const logoutBtn = document.getElementById('logoutBtn');
+  const userName = document.getElementById('userName');
+  
+  // Get user info from localStorage
+  const userInfo = localStorage.getItem('userInfo');
+  if (userInfo) {
+    const user = JSON.parse(userInfo);
+    userName.textContent = `Welcome, ${user.name}`;
+  }
+
+  logoutBtn.addEventListener('click', () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('userInfo');
+    window.location.href = 'login.html';
+  });
+}
+
+// Get authorization header
+function getAuthHeader() {
+  const token = localStorage.getItem('token');
+  return {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+}
+
 // DOM Elements
 const studentForm = document.getElementById('studentForm');
 const editForm = document.getElementById('editForm');
@@ -29,13 +85,19 @@ window.addEventListener('click', (event) => {
   }
 });
 
-// Initialize - Load students on page load
-document.addEventListener('DOMContentLoaded', loadStudents);
-
 // Load all students
 async function loadStudents() {
   try {
-    const response = await fetch('/api/students');
+    const response = await fetch('/api/students', {
+      headers: getAuthHeader()
+    });
+    
+    if (response.status === 401) {
+      localStorage.removeItem('token');
+      window.location.href = 'login.html';
+      return;
+    }
+    
     if (!response.ok) throw new Error('Failed to load students');
     
     const students = await response.json();
@@ -98,9 +160,7 @@ async function handleAddStudent(e) {
   try {
     const response = await fetch('/api/students', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: getAuthHeader(),
       body: JSON.stringify(formData)
     });
 
@@ -122,7 +182,9 @@ async function handleAddStudent(e) {
 // Open edit modal
 async function openEditModal(studentId) {
   try {
-    const response = await fetch(`/api/students/${studentId}`);
+    const response = await fetch(`/api/students/${studentId}`, {
+      headers: getAuthHeader()
+    });
     if (!response.ok) throw new Error('Failed to load student');
     
     const student = await response.json();
@@ -171,9 +233,7 @@ async function handleEditStudent(e) {
   try {
     const response = await fetch(`/api/students/${studentId}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: getAuthHeader(),
       body: JSON.stringify(formData)
     });
 
@@ -200,7 +260,8 @@ async function deleteStudent(studentId) {
 
   try {
     const response = await fetch(`/api/students/${studentId}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: getAuthHeader()
     });
 
     if (!response.ok) throw new Error('Failed to delete student');
@@ -223,7 +284,9 @@ async function handleSearch() {
   }
 
   try {
-    const response = await fetch(`/api/students/search/${encodeURIComponent(searchQuery)}`);
+    const response = await fetch(`/api/students/search/${encodeURIComponent(searchQuery)}`, {
+      headers: getAuthHeader()
+    });
     if (!response.ok) throw new Error('Failed to search students');
     
     const students = await response.json();
