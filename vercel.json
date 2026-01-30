@@ -4,10 +4,6 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
-    },
-    {
-      "src": "public/**",
-      "use": "@vercel/static"
     }
   ],
   "routes": [
@@ -16,15 +12,18 @@
       "dest": "server.js"
     },
     {
-      "src": "/(.*)",
+      "src": "/public/(.*)",
       "dest": "public/$1"
     },
     {
-      "src": "^/(?!api/|public/).*$",
-      "dest": "public/index.html"
+      "src": "/(.*\\..*)",
+      "dest": "/public/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
     }
   ],
-  "env": {
-    "JWT_SECRET": "@jwt_secret"
-  }
+  "buildCommand": "npm install",
+  "devCommand": "npm start"
 }
