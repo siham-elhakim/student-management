@@ -37,6 +37,9 @@
   </div>
 
   <script>
+    // Get the API base URL (works on both localhost and Vercel)
+    const getApiUrl = () => window.location.origin;
+
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       
@@ -45,7 +48,10 @@
       const messageDiv = document.getElementById('message');
 
       try {
-        const response = await fetch('/api/auth/login', {
+        const apiUrl = getApiUrl();
+        console.log('Logging in at:', apiUrl + '/api/auth/login');
+
+        const response = await fetch(apiUrl + '/api/auth/login', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -53,7 +59,9 @@
           body: JSON.stringify({ email, password })
         });
 
+        console.log('Response status:', response.status);
         const result = await response.json();
+        console.log('Response data:', result);
 
         if (!response.ok) {
           throw new Error(result.error || 'Login failed');
@@ -70,6 +78,7 @@
           window.location.href = 'index.html';
         }, 1500);
       } catch (error) {
+        console.error('Login error:', error);
         messageDiv.textContent = 'Error: ' + error.message;
         messageDiv.className = 'message error';
       }

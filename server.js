@@ -4,10 +4,14 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// Use /tmp for Vercel, otherwise use current directory
+const DB_PATH = process.env.NODE_ENV === 'production' ? '/tmp/students.db' : './students.db';
 
 // Middleware
 app.use(bodyParser.json());
@@ -20,11 +24,11 @@ app.get('/', (req, res) => {
 });
 
 // Initialize SQLite Database
-const db = new sqlite3.Database('./students.db', (err) => {
+const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
     console.error('Error opening database:', err);
   } else {
-    console.log('Connected to SQLite database');
+    console.log('Connected to SQLite database at:', DB_PATH);
     initializeDatabase();
   }
 });
@@ -97,7 +101,10 @@ function verifyToken(req, res, next) {
 app.post('/api/auth/register', (req, res) => {
   const { name, email, password } = req.body;
 
+  console.log('Registration attempt:', { name, email });
+
   if (!name || !email || !password) {
+    console.log('Missing fields in registration');
     return res.status(400).json({ error: 'Name, email, and password are required' });
   }
 
@@ -108,18 +115,21 @@ app.post('/api/auth/register', (req, res) => {
   // Hash password
   bcrypt.hash(password, 10, (err, hashedPassword) => {
     if (err) {
+      console.error('Password hashing error:', err);
       return res.status(500).json({ error: 'Password hashing failed' });
     }
 
     const query = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
     db.run(query, [name, email, hashedPassword], function(err) {
       if (err) {
+        console.error('Database error during registration:', err);
         if (err.message.includes('UNIQUE constraint failed')) {
           return res.status(400).json({ error: 'Email already registered' });
         }
         return res.status(500).json({ error: err.message });
       }
 
+      console.log('User registered successfully:', { id: this.lastID, email });
       res.status(201).json({ 
         id: this.lastID,
         message: 'User registered successfully. Please login.' 
@@ -132,26 +142,32 @@ app.post('/api/auth/register', (req, res) => {
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
 
+  console.log('Login attempt:', email);
+
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
   db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
     if (err) {
+      console.error('Database error during login:', err);
       return res.status(500).json({ error: err.message });
     }
 
     if (!user) {
+      console.log('User not found:', email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Compare passwords
     bcrypt.compare(password, user.password, (err, isMatch) => {
       if (err) {
+        console.error('Password comparison error:', err);
         return res.status(500).json({ error: 'Password comparison failed' });
       }
 
       if (!isMatch) {
+        console.log('Password mismatch for:', email);
         return res.status(401).json({ error: 'Invalid email or password' });
       }
 
